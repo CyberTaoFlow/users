@@ -3,6 +3,7 @@
 @load base/protocols/dhcp
 
 module Users;
+
 export {
 
 	redef enum Log::ID += { LOG };
@@ -12,8 +13,9 @@ export {
 	};
 		
 	type Info: record {
-		name: 		string &log;
 		ip:		addr &log &optional;
+		name: 		string &log;
+		#mac:		string &log;
  	        department: 	string &log;
  	        location:	string &log;
  	        email:		string &log;
@@ -36,17 +38,34 @@ function reverse_ip(ip: addr): addr
 	return to_addr(cat(octets[4], ".", octets[3], ".", octets[2], ".", octets[1]));
 }
 
-#event new_connection()
-#{
-#	if orig_h is in user_cache
-#	{
-#		c$user = user_cache where c$orig_h is
-#	}
-#}
+event new_connection(c: connection)
+{
+	local each: string;
+
+	for (each in user_cache)
+	{
+		# this should check if is_orig OR something. 
+		# it should work for more than connection made by IPs associated to MAC addrs in the users.dat table
+		# it should also work for connections TO IPs associated with MAC addrs in the users.dat table
+		#
+		# this if statement bitches if the new_connection event occurs before Bro finished reading in the user.dat table
+		
+		if (user_cache[each]?$ip)
+		{
+			print "connection being made by: ";
+			print user_cache[each];
+		}
+		
+	#	if (user_cache[each]$ip == c$id$orig_h)
+	#	{
+	#		c$user = user_cache[each];
+	#	}
+	}
+}
 
 event bro_init()
 {
-	Log::create_stream(Users::LOG, [$columns=Info, $ev=log_users]);
+	Log::create_stream(Users::LOG, [$columns=Users::Info, $ev=Users::log_users]);
 
 	Input::add_table( [$source="users.dat", $name="users", $idx=Users::Idx, $val=Users::Info, $destination=Users::user_cache, $mode=Input::REREAD] );
 	Input::remove("users");
@@ -54,14 +73,10 @@ event bro_init()
 
 event dhcp_ack(c: connection, msg: dhcp_msg, mask: addr, router: dhcp_router_list, lease: interval, serv_addr: addr, host_name: string)
 {
-#	test if this IP address is in the user_cache first? 
-#	if (user_cache[dhcp_msg$h_addr])
-#	{
-		print reverse_ip(msg$yiaddr);
-		# i don't think the input framework has read in the table before this event is raised
-		# therefor the user_cache hasn't been built yet and this command freaks out
-		#user_cache[msg$h_addr]$ip = msg$yiaddr;
-#	}
+	if (msg$h_addr in Users::user_cache)
+	{
+		Users::user_cache[msg$h_addr]$ip = reverse_ip(msg$yiaddr);
+	}
 }
 
 #event DHCP_release()
@@ -76,6 +91,10 @@ event dhcp_ack(c: connection, msg: dhcp_msg, mask: addr, router: dhcp_router_lis
 
 event bro_done()
 {
-#	write the user_cache table to disk
-	print Users::user_cache;
+
+#	write the user_cache table to disk for rereading upon starting back up
+	for (each in Users::user_cache)
+	{
+		Log::write(Users::LOG, Users::user_cache[each]);
+	}
 }
